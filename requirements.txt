@@ -1,0 +1,10 @@
+python-dotenv==1.0.0
+websockets==13.0
+pydantic==2.5.2
+pydantic-settings==2.0.3  # Added for BaseSettings
+numpy==1.26.2
+PyAudio==0.2.13
+soundfile==0.12.1
+python-logging-loki==0.3.1
+pytest==7.4.3
+pytest-asyncio==0.21.1

@@ -1,0 +1,23 @@
+realtime-sts/
+├── .env                     # Environment variables (API keys)
+├── requirements.txt         # Dependencies
+├── src/
+│   ├── __init__.py
+│   ├── main.py              # Entry point
+│   ├── config.py            # Configuration settings
+│   ├── realtime_client.py   # OpenAI Realtime API client
+│   ├── audio_handler.py     # Audio processing 
+│   ├── conversation.py      # Conversation state management
+│   └── utils/
+│       ├── __init__.py
+│       ├── logging_utils.py # Logging setup
+│       └── audio_utils.py   # Audio conversion utilities
+└── tests/
+    ├── __init__.py
+    ├── test_realtime_client.py
+    └── test_audio_handler.py
+├── examples/               # Example scripts and demos
+│   ├── demo.py             # Basic demo script
+│   ├── audio_test.py       # Audio testing script
+│   └── simple_test.py      # Simple WebSocket test
+└── main.py                 # Main application entry point
