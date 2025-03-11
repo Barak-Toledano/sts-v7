@@ -20,33 +20,34 @@ class ConversationManager:
     
     def __init__(self, realtime_client: RealtimeClient):
         """
-        Initialize the conversation manager
+        Initialize a new conversation manager
         
         Args:
             realtime_client: Connected Realtime API client
         """
         self.client = realtime_client
         self.session_id = None
-        self.conversation_items = {}
-        self.active_responses = set()  # Track multiple concurrent responses
-        self.responses = {}
-        self.function_calls = {}
-        self.transcripts = {}
-        self.history = []  # Store conversation history
-        
-        # Callback system
+        self.active_responses = {}  # Response ID -> Response Data
+        self.active_function_calls = {}  # Call ID -> Call Data
         self.event_handlers = {
-            "on_transcript": [],
             "on_text_response": [],
+            "on_transcript": [],
             "on_function_call": [],
             "on_response_complete": [],
             "on_error": []
-        }
+        }  # Event type -> List of handlers
+        self.pending_responses = set()  # Set to track pending responses
+        self.tasks = []  # Track async tasks for cleanup
         
-        # Tasks
-        self.tasks = []
+        # Track conversation content
+        self.conversation_items = {}  # Item ID -> Item Data
+        self.conversation_history = []  # List of conversation items in order
         
-        # Register callbacks with the client
+        # For tracking transcript data
+        self.current_text_response = ""
+        self.current_transcript = {}  # Chunk Index -> Text
+        
+        # Register internal event handlers
         self._register_callbacks()
     
     def _register_callbacks(self) -> None:
@@ -121,7 +122,7 @@ class ConversationManager:
                     "created_at": time.time(),
                     "item": item
                 }
-                self.history.append(history_entry)
+                self.conversation_history.append(history_entry)
                 
                 logger.debug(f"Conversation item created: {item_id} (type: {item.get('type')})")
         except Exception as e:
@@ -140,8 +141,7 @@ class ConversationManager:
             response_id = response.get("id")
             
             if response_id:
-                self.active_responses.add(response_id)
-                self.responses[response_id] = {
+                self.active_responses[response_id] = {
                     "id": response_id,
                     "text": "",
                     "transcripts": {},
@@ -170,9 +170,9 @@ class ConversationManager:
             
             if response_id and delta:
                 # Ensure response exists in our tracking
-                if response_id not in self.responses:
+                if response_id not in self.active_responses:
                     logger.warning(f"Received delta for unknown response: {response_id}")
-                    self.responses[response_id] = {
+                    self.active_responses[response_id] = {
                         "id": response_id,
                         "text": "",
                         "status": "in_progress",
@@ -180,11 +180,11 @@ class ConversationManager:
                     }
                     
                 # Update the stored response text
-                if "text" not in self.responses[response_id]:
-                    self.responses[response_id]["text"] = ""
+                if "text" not in self.active_responses[response_id]:
+                    self.active_responses[response_id]["text"] = ""
                 
-                self.responses[response_id]["text"] += delta
-                full_text = self.responses[response_id]["text"]
+                self.active_responses[response_id]["text"] += delta
+                full_text = self.active_responses[response_id]["text"]
                 
                 # Log for debugging (only first few characters to avoid spam)
                 logger.debug(f"Text delta: '{delta[:20]}{'...' if len(delta) > 20 else ''}'")
@@ -211,9 +211,9 @@ class ConversationManager:
             response_id = event_data.get("response", {}).get("id")
             text = event_data.get("text", "")
             
-            if response_id and response_id in self.responses:
+            if response_id and response_id in self.active_responses:
                 # Update with the final text
-                self.responses[response_id]["text"] = text
+                self.active_responses[response_id]["text"] = text
                 logger.debug(f"Text response complete for {response_id}")
         except Exception as e:
             logger.error(f"Error handling text done event: {e}")
@@ -231,14 +231,14 @@ class ConversationManager:
             delta = event_data.get("delta", "")
             part_id = event_data.get("part_id", "unknown")
             
-            if response_id and response_id in self.responses and delta:
+            if response_id and response_id in self.active_responses and delta:
                 # Initialize transcript for this part if needed
-                if part_id not in self.responses[response_id]["transcripts"]:
-                    self.responses[response_id]["transcripts"][part_id] = ""
+                if part_id not in self.active_responses[response_id]["transcripts"]:
+                    self.active_responses[response_id]["transcripts"][part_id] = ""
                 
                 # Update the transcript
-                self.responses[response_id]["transcripts"][part_id] += delta
-                full_transcript = self.responses[response_id]["transcripts"][part_id]
+                self.active_responses[response_id]["transcripts"][part_id] += delta
+                full_transcript = self.active_responses[response_id]["transcripts"][part_id]
                 
                 # Call any registered transcript handlers
                 for handler in self.event_handlers["on_transcript"]:
@@ -262,9 +262,9 @@ class ConversationManager:
             transcript = event_data.get("transcript", "")
             part_id = event_data.get("part_id", "unknown")
             
-            if response_id and response_id in self.responses:
+            if response_id and response_id in self.active_responses:
                 # Update with the final transcript
-                self.responses[response_id]["transcripts"][part_id] = transcript
+                self.active_responses[response_id]["transcripts"][part_id] = transcript
                 logger.debug(f"Audio transcript complete for part {part_id} in response {response_id}")
         except Exception as e:
             logger.error(f"Error handling audio transcript done event: {e}")
@@ -287,8 +287,8 @@ class ConversationManager:
                 return
                 
             # Initialize function call if needed
-            if call_id not in self.function_calls:
-                self.function_calls[call_id] = {
+            if call_id not in self.active_function_calls:
+                self.active_function_calls[call_id] = {
                     "id": call_id,
                     "response_id": response_id,
                     "name": function_name,
@@ -299,22 +299,22 @@ class ConversationManager:
                 }
                 
                 # Add to response's function calls
-                if response_id in self.responses:
-                    if "function_calls" not in self.responses[response_id]:
-                        self.responses[response_id]["function_calls"] = []
-                    self.responses[response_id]["function_calls"].append(call_id)
+                if response_id in self.active_responses:
+                    if "function_calls" not in self.active_responses[response_id]:
+                        self.active_responses[response_id]["function_calls"] = []
+                    self.active_responses[response_id]["function_calls"].append(call_id)
             
             # Update arguments
-            self.function_calls[call_id]["arguments"] += delta
+            self.active_function_calls[call_id]["arguments"] += delta
             
             # Only try to parse JSON if we haven't already got valid JSON
             # and we have at least one curly brace
-            args = self.function_calls[call_id]["arguments"]
-            if not self.function_calls[call_id]["complete_json"] and "{" in args:
+            args = self.active_function_calls[call_id]["arguments"]
+            if not self.active_function_calls[call_id]["complete_json"] and "{" in args:
                 try:
                     args_json = json.loads(args)
-                    self.function_calls[call_id]["arguments_json"] = args_json
-                    self.function_calls[call_id]["complete_json"] = True
+                    self.active_function_calls[call_id]["arguments_json"] = args_json
+                    self.active_function_calls[call_id]["complete_json"] = True
                     
                     # Call any registered function call handlers
                     for handler in self.event_handlers["on_function_call"]:
@@ -345,55 +345,68 @@ class ConversationManager:
             response = event_data.get("response", {})
             response_id = response.get("id")
             
-            if response_id and response_id in self.responses:
+            if response_id and response_id in self.active_responses:
                 # Update response status
-                self.responses[response_id]["status"] = "completed"
+                self.active_responses[response_id]["status"] = "completed"
                 
                 # Store output items
-                self.responses[response_id]["output"] = response.get("output", [])
+                self.active_responses[response_id]["output"] = response.get("output", [])
                 
                 # Store usage information
-                self.responses[response_id]["usage"] = response.get("usage", {})
+                self.active_responses[response_id]["usage"] = response.get("usage", {})
+                
+                # Save response data before removing it
+                response_data = self.active_responses[response_id].copy()
+                
+                # Remove from pending responses if present
+                if response_id in self.pending_responses:
+                    self.pending_responses.remove(response_id)
                 
                 # Remove from active responses
                 if response_id in self.active_responses:
-                    self.active_responses.remove(response_id)
+                    del self.active_responses[response_id]
                 
                 # Handle any function calls that completed
                 for output_item in response.get("output", []):
                     if output_item.get("type") == "function_call":
                         call_id = output_item.get("call_id")
-                        if call_id and call_id in self.function_calls:
-                            self.function_calls[call_id]["status"] = "completed"
-                            self.function_calls[call_id]["arguments"] = output_item.get("arguments", "")
+                        if call_id and call_id in self.active_function_calls:
+                            self.active_function_calls[call_id]["status"] = "completed"
+                            self.active_function_calls[call_id]["arguments"] = output_item.get("arguments", "")
                             
                             # Try to parse the arguments as JSON
                             try:
-                                args_json = json.loads(self.function_calls[call_id]["arguments"])
-                                self.function_calls[call_id]["arguments_json"] = args_json
-                                self.function_calls[call_id]["complete_json"] = True
+                                args_json = json.loads(self.active_function_calls[call_id]["arguments"])
+                                self.active_function_calls[call_id]["arguments_json"] = args_json
+                                self.active_function_calls[call_id]["complete_json"] = True
                             except json.JSONDecodeError:
-                                logger.warning(f"Could not parse function call arguments as JSON: {self.function_calls[call_id]['arguments']}")
+                                logger.warning(f"Could not parse function call arguments as JSON: {self.active_function_calls[call_id]['arguments']}")
                 
                 # Add final response to history
                 history_entry = {
                     "id": response_id,
                     "type": "response",
-                    "text": self.responses[response_id].get("text", ""),
-                    "created_at": self.responses[response_id].get("created_at"),
+                    "text": response_data.get("text", ""),
+                    "created_at": response_data.get("created_at"),
                     "completed_at": time.time(),
-                    "response": self.responses[response_id]
+                    "response": response_data
                 }
-                self.history.append(history_entry)
+                self.conversation_history.append(history_entry)
                 
                 # Call any registered response complete handlers
                 for handler in self.event_handlers["on_response_complete"]:
                     try:
-                        await handler(self.responses[response_id])
+                        await handler(response_data)
                     except Exception as e:
                         logger.error(f"Error in response complete handler: {e}")
                         
                 logger.info(f"Response completed: {response_id}")
+            elif response_id:
+                # Response ID exists but not in active_responses
+                logger.warning(f"Received done event for unknown response: {response_id}")
+            else:
+                # No response ID in the event
+                logger.warning("Received done event with no response ID")
         except Exception as e:
             logger.error(f"Error handling response done event: {e}")
             await self._notify_error("Error handling response done", e)
@@ -510,8 +523,16 @@ class ConversationManager:
             # Configure turn detection (VAD)
             if not vad_enabled:
                 session_config["turn_detection"] = None
-            elif not auto_response:
-                session_config["turn_detection"] = {"create_response": False}
+            else:
+                # Custom VAD settings with better parameters for interruption
+                session_config["turn_detection"] = {
+                    "type": "server_vad",
+                    "threshold": 0.85,  # Higher number means less sensitive (0-1 range)
+                    "prefix_padding_ms": 500,  # More padding before speech
+                    "silence_duration_ms": 1200,  # Even longer wait for silence to ensure user is done speaking
+                    "create_response": auto_response,
+                    "interrupt_response": True  # Explicitly enable interruption
+                }
             
             # Update the session
             if session_config:
@@ -563,74 +584,64 @@ class ConversationManager:
         self,
         modalities: List[str] = None,
         instructions: Optional[str] = None,
-        metadata: Dict[str, Any] = None,
-        out_of_band: bool = False,
-        custom_input: List[Dict[str, Any]] = None
-    ) -> Optional[str]:
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
-        Request a response from the model
+        Request the model to generate a response
         
         Args:
-            modalities: List of response modalities (text, audio)
+            modalities: List of response modalities ("text", "audio")
             instructions: Optional instructions for this specific response
-            metadata: Optional metadata for tracking
-            out_of_band: Whether this response should be outside the main conversation
-            custom_input: Custom input items for this response
+            metadata: Optional metadata for this response
             
         Returns:
-            Optional[str]: Response ID if successful, None otherwise
+            str: Response ID
         """
+        if not self.client:
+            logger.error("Cannot request response: Client not available")
+            return ""
+            
         try:
-            # Default to text if no modality specified
-            if not modalities:
-                modalities = ["text"]
-                
+            # Import instructions
+            from src.system_instructions import APPOINTMENT_SCHEDULER
+            
             response_data = {}
             
-            response_data["modalities"] = modalities
-            
+            if modalities:
+                response_data["modalities"] = modalities
+            else:
+                # Default to text and audio if not specified
+                response_data["modalities"] = ["text", "audio"]
+                
+            # ALWAYS include instructions - either custom or our default
             if instructions:
                 response_data["instructions"] = instructions
+            else:
+                # Make a copy of the instructions string to avoid any reference issues
+                appointment_instructions = str(APPOINTMENT_SCHEDULER)
+                response_data["instructions"] = appointment_instructions
+                print(f"DEBUG - Using default instructions: {appointment_instructions}")
                 
             if metadata:
                 response_data["metadata"] = metadata
                 
-            if out_of_band:
-                response_data["conversation"] = "none"
+            # Print the formatted response data
+            print(f"DEBUG - RESPONSE CREATE DATA: {json.dumps(response_data)[:200]}...")
                 
-            if custom_input is not None:
-                response_data["input"] = custom_input
+            # Request a response from the model
+            response_id = await self.client.create_response(**response_data)
             
-            # Default audio formats
-            response_data["input_audio_format"] = {
-                "type": settings.AUDIO_FORMAT,
-                "sampling_rate": settings.SAMPLE_RATE,
-                "channels": settings.CHANNELS
-            }
-            
-            response_data["output_audio_format"] = {
-                "type": settings.AUDIO_FORMAT,
-                "sampling_rate": settings.SAMPLE_RATE,
-                "channels": settings.CHANNELS
-            }
-            
-            # Request the response
-            event_id = await self.client.create_response(
-                modalities=modalities,
-                instructions=instructions,
-                input_audio_format=response_data["input_audio_format"],
-                output_audio_format=response_data["output_audio_format"],
-                metadata=metadata,
-                conversation="none" if out_of_band else None,
-                input_items=custom_input
-            )
-            
-            logger.info(f"Requested model response (modalities: {modalities})")
-            return event_id
+            if response_id:
+                self.pending_responses.add(response_id)
+                logger.info(f"Requested model response (modalities: {response_data['modalities']})")
+            else:
+                logger.error("Failed to request model response")
+                
+            return response_id
+                
         except Exception as e:
             logger.error(f"Error requesting response: {e}")
-            await self._notify_error("Error requesting response", e)
-            return None
+            return ""
     
     async def submit_function_result(self, call_id: str, result: Dict[str, Any]) -> Optional[str]:
         """
@@ -644,7 +655,7 @@ class ConversationManager:
             Optional[str]: Event ID if successful, None otherwise
         """
         try:
-            if call_id not in self.function_calls:
+            if call_id not in self.active_function_calls:
                 logger.warning(f"Function call ID not found: {call_id}")
                 return None
                 
@@ -668,7 +679,7 @@ class ConversationManager:
             latest_response_id = None
             latest_timestamp = 0
             
-            for response_id, response in self.responses.items():
+            for response_id, response in self.active_responses.items():
                 if response.get("status") == "completed" and response.get("text"):
                     timestamp = response.get("created_at", 0)
                     if timestamp > latest_timestamp:
@@ -676,7 +687,7 @@ class ConversationManager:
                         latest_response_id = response_id
             
             if latest_response_id:
-                return self.responses[latest_response_id].get("text", "")
+                return self.active_responses[latest_response_id].get("text", "")
                 
             return ""
         except Exception as e:
@@ -695,13 +706,13 @@ class ConversationManager:
             latest_response_id = None
             latest_timestamp = 0
             
-            for response_id, response in self.responses.items():
+            for response_id, response in self.active_responses.items():
                 if response.get("transcripts") and response.get("created_at", 0) > latest_timestamp:
                     latest_timestamp = response.get("created_at", 0)
                     latest_response_id = response_id
             
             if latest_response_id:
-                return self.responses[latest_response_id].get("transcripts", {})
+                return self.active_responses[latest_response_id].get("transcripts", {})
                 
             return {}
         except Exception as e:
@@ -726,11 +737,11 @@ class ConversationManager:
         try:
             if not include_system:
                 filtered_history = [
-                    item for item in self.history 
+                    item for item in self.conversation_history 
                     if not (item.get("type") == "message" and item.get("role") == "system")
                 ]
             else:
-                filtered_history = self.history.copy()
+                filtered_history = self.conversation_history.copy()
                 
             # Sort by timestamp, newest first
             sorted_history = sorted(
@@ -758,7 +769,7 @@ class ConversationManager:
         Returns:
             Optional[Dict[str, Any]]: Response data or None if not found
         """
-        return self.responses.get(response_id)
+        return self.active_responses.get(response_id)
     
     async def get_function_call_by_id(self, call_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -770,7 +781,7 @@ class ConversationManager:
         Returns:
             Optional[Dict[str, Any]]: Function call data or None if not found
         """
-        return self.function_calls.get(call_id)
+        return self.active_function_calls.get(call_id)
     
         
     # In ConversationManager, improve the wait_for_all_responses method:
@@ -835,13 +846,14 @@ class ConversationManager:
         """Clean up resources"""
         try:
             # Cancel any running tasks
-            for task in self.tasks:
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+            if hasattr(self, 'tasks') and self.tasks:
+                for task in self.tasks:
+                    if not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
             
             # Clear all event handlers to prevent memory leaks
             for event_type in self.event_handlers:

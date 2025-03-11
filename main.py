@@ -1,4 +1,3 @@
-# In main.py, add these imports at the top
 import asyncio
 import os
 import logging
@@ -20,6 +19,7 @@ from src.config import settings
 from src.realtime_client import RealtimeClient
 from src.audio_handler import AudioHandler
 from src.conversation import ConversationManager
+from src.system_instructions import APPOINTMENT_SCHEDULER, APPOINTMENT_TOOLS
 
 # Set up logging
 logger = setup_logger("main")
@@ -185,81 +185,10 @@ async def setup_conversation(conversation: ConversationManager) -> None:
     Args:
         conversation: Conversation manager
     """
-    # Example tool definition for appointment scheduling
-    tools = [
-        {
-            "type": "function",
-            "name": "check_availability",
-            "description": "Check available appointment slots",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {
-                        "type": "string", 
-                        "description": "Date to check in YYYY-MM-DD format"
-                    },
-                    "service_type": {
-                        "type": "string",
-                        "description": "Type of service needed",
-                        "enum": ["Consultation", "Basic service", "Premium service"]
-                    }
-                },
-                "required": ["date"]
-            }
-        },
-        {
-            "type": "function",
-            "name": "schedule_appointment",
-            "description": "Schedule an appointment",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {
-                        "type": "string",
-                        "description": "Appointment date in YYYY-MM-DD format"
-                    },
-                    "time": {
-                        "type": "string",
-                        "description": "Appointment time in HH:MM format"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Customer name"
-                    },
-                    "service_type": {
-                        "type": "string",
-                        "description": "Type of service needed",
-                        "enum": ["Consultation", "Basic service", "Premium service"]
-                    }
-                },
-                "required": ["date", "time", "name", "service_type"]
-            }
-        }
-    ]
-    
-    # System instructions for the appointment agent
-    instructions = """
-    You are an appointment scheduling assistant. Your goal is to help users schedule appointments.
-    
-    Available services:
-    - Consultation (30 minutes)
-    - Basic service (1 hour)
-    - Premium service (2 hours)
-    
-    When scheduling appointments:
-    1. First determine what service the user needs
-    2. Check availability for that service using the check_availability function
-    3. Help the user select a time and schedule the appointment with schedule_appointment
-    
-    Be friendly, professional, and efficient. Always confirm details before finalizing an appointment.
-    
-    Always speak naturally like a human appointment scheduler would speak.
-    """
-    
     # Configure the conversation
     success = await conversation.configure_session(
-        instructions=instructions,
-        tools=tools,
+        instructions=APPOINTMENT_SCHEDULER,
+        tools=APPOINTMENT_TOOLS,
         voice="alloy",  # Options include: alloy, echo, fable, onyx, nova, shimmer
         vad_enabled=True,
         auto_response=True
@@ -269,10 +198,20 @@ async def setup_conversation(conversation: ConversationManager) -> None:
         logger.error("Failed to configure conversation session")
         return
     
-    # Send initial message
-    initial_prompt = "I'm your appointment scheduling assistant. How can I help you today?"
-    await conversation.send_text_message(initial_prompt)
-    await conversation.request_response(modalities=["text", "audio"])
+    # Don't send an initial greeting or request a response
+    # The AI will only respond after the user speaks
+    
+    # NOTE: To make the AI speak first (without waiting for user input), uncomment these lines:
+    # 
+    # # Send initial greeting message
+    # await conversation.send_text_message(
+    #     "Hello! I'm your appointment scheduling assistant. I can help you book appointments for our services including consultations, basic services, and premium services. Please let me know how I can assist you today."
+    # )
+    # 
+    # # Request first response from the model
+    # await conversation.request_response(modalities=["text", "audio"])
+    
+    logger.info("Session configured successfully")
 
 async def select_audio_devices() -> Tuple[Optional[int], Optional[int]]:
     """
@@ -439,10 +378,6 @@ async def run_interactive_session(config: Dict[str, Any]) -> None:
         # Start audio recording and playback
         await audio.start_recording()
         await audio.start_playback()
-        
-        # Initial greeting via text to start the conversation
-        await conversation.send_text_message("Hello, I need help scheduling an appointment.")
-        await conversation.request_response(modalities=["text", "audio"])
         
         # Main loop - keep the session running until interrupted
         while not shutdown_event.is_set():

@@ -247,6 +247,11 @@ class RealtimeClient:
         
         try:
             event_json = json.dumps(event)
+            # Additional debugging - what we're actually sending to the API
+            if event_type == "session.update" and "session" in data and "instructions" in data["session"]:
+                print(f"DEBUG - SENDING TO API: type={event_type}, instructions={data['session']['instructions'][:50]}...")
+                print(f"DEBUG - FULL EVENT JSON: {event_json[:200]}...")
+            
             logger.debug(f"Sending event: {event_type} ({event_id})")
             await self.websocket.send(event_json)
             return event_id
@@ -468,6 +473,8 @@ class RealtimeClient:
         # Process and validate specific fields
         if "instructions" in session_data:
             validated_data["instructions"] = session_data["instructions"]
+            # Print for debugging
+            print(f"DEBUG - Sending instructions: {session_data['instructions'][:50]}...")
             
         if "voice" in session_data:
             # Validate voice parameter
@@ -507,6 +514,10 @@ class RealtimeClient:
         for key, value in session_data.items():
             if key not in validated_data and key not in ["event_id", "type"]:
                 validated_data[key] = value
+        
+        # Print the full event for debugging
+        event_data = {"session": validated_data}
+        print(f"DEBUG - Full session.update event: {json.dumps(event_data)[:100]}...")
         
         logger.debug(f"Updating session with: {json.dumps(validated_data)}")
         return await self._send_event("session.update", {"session": validated_data})
@@ -620,6 +631,8 @@ class RealtimeClient:
             response_data["modalities"] = modalities
         if instructions:
             response_data["instructions"] = instructions
+            # Print debug info
+            print(f"DEBUG - Including instructions in response.create: {instructions[:50]}...")
         if input_audio_format:
             response_data["input_audio_format"] = input_audio_format
         if output_audio_format:
@@ -633,6 +646,8 @@ class RealtimeClient:
         if input_items:
             response_data["input"] = input_items
             
+        # Print full response.create data for debugging
+        print(f"DEBUG - FULL response.create: {json.dumps(response_data)[:200]}...")
         logger.debug(f"Creating response with data: {json.dumps(response_data)}")
         return await self._send_event("response.create", {"response": response_data})
     
@@ -698,6 +713,29 @@ class RealtimeClient:
                     
                 # Clean up the tracked event
                 del self.pending_events[event_id]
+            return True
+        
+        # Handle unknown errors
+        elif error_code == "unknown_code" or not error_code:
+            # Log the entire error data for debugging
+            logger.warning(f"Received unknown error from API. Full error data: {json.dumps(error_data, indent=2)}")
+            
+            # Check if this is related to a specific event we can identify
+            event_id = error_data.get("event_id")
+            if event_id and event_id in self.pending_events:
+                original_event = self.pending_events[event_id]
+                event_type = original_event.get('type')
+                
+                logger.warning(f"Unknown error related to event type: {event_type}")
+                logger.warning(f"Original event data: {json.dumps(original_event, indent=2)}")
+                
+                # For response.create events, retry with simplified parameters
+                if event_type == "response.create":
+                    logger.warning("Will attempt to continue with conversation despite unknown error")
+                    return True
+            
+            # Continue running despite the error
+            logger.warning("Continuing with operation despite unknown error")
             return True
             
         # No specific recovery strategy for this error

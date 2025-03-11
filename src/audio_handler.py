@@ -74,6 +74,11 @@ class AudioHandler:
         # For synchronizing with PyAudio callbacks
         self._callback_queue = queue.Queue(maxsize=max_queue_size)
         
+        # For VAD (voice activity detection)
+        self.speech_active = False
+        self.last_speech_start_time = 0.0
+        self.speech_pause_pending = False
+        
         # Register event callbacks
         self._register_callbacks()
     
@@ -118,9 +123,59 @@ class AudioHandler:
         
         async def speech_started_handler(event_data):
             logger.info("Speech detected: User started speaking")
+            # Store the timestamp when speech started
+            self.last_speech_start_time = time.time()
+            
+            # If AI is currently speaking, pause the audio output to let the user speak
+            if self.output_stream and self.playing:
+                logger.info("User started speaking - pausing AI audio output")
+                # Just mark as paused but don't actually pause the stream yet
+                # We'll wait to see if this is a valid speech or just a brief noise
+                self.speech_pause_pending = True
+                
+                # Set a timer to actually pause after a short delay if speech continues
+                async def delayed_pause():
+                    await asyncio.sleep(0.5)  # Increased delay to 500ms to confirm this isn't just a brief noise
+                    if self.speech_pause_pending and time.time() - self.last_speech_start_time >= 0.5:
+                        logger.info("Confirmed real speech - pausing AI audio")
+                        await self.pause_playback()
+                        self.speech_pause_pending = False
+                
+                # Create and track the task
+                pause_task = asyncio.create_task(delayed_pause())
+                self.tasks.append(pause_task)
         
         async def speech_stopped_handler(event_data):
             logger.info("Speech detected: User stopped speaking")
+            speech_duration = time.time() - getattr(self, 'last_speech_start_time', time.time())
+            
+            # Cancel pending pause if this was just a brief noise
+            if hasattr(self, 'speech_pause_pending') and self.speech_pause_pending and speech_duration < 1.0:
+                self.speech_pause_pending = False
+                logger.info(f"Ignored brief noise (duration: {speech_duration:.2f}s) - not considered speech")
+                return
+                
+            # Only consider it valid speech if it lasted for a minimum duration
+            if speech_duration >= 1.0:  # Increased threshold for more reliable speech detection
+                logger.info(f"Valid speech detected (duration: {speech_duration:.2f}s)")
+                
+                # Add a delay before resuming AI audio to accommodate slow speakers or brief pauses
+                async def delayed_resume():
+                    # Wait for additional time to ensure the user is really done speaking
+                    await asyncio.sleep(0.8)  # 800ms extra delay before AI starts speaking again
+                    
+                    # Check if we're still in a state where resuming makes sense
+                    # (user might have started speaking again during this delay)
+                    if self.output_stream and not self.output_stream.is_active():
+                        logger.info("Delay period ended - resuming AI audio output")
+                        await self.resume_playback()
+                
+                # Create and track the resume task
+                resume_task = asyncio.create_task(delayed_resume())
+                self.tasks.append(resume_task)
+            else:
+                logger.info(f"Ignored brief noise (duration: {speech_duration:.2f}s) - not considered speech")
+                self.speech_pause_pending = False
         
         # Register the async handlers
         self.client.register_event_callback("response.audio.delta", audio_delta_handler)
@@ -425,6 +480,9 @@ class AudioHandler:
             
             # Counter for empty queue checks
             empty_checks = 0
+            # Counter for audio errors
+            consecutive_errors = 0
+            max_consecutive_errors = 3
             
             while self.playing:
                 # Check if there's data in the queue
@@ -432,16 +490,27 @@ class AudioHandler:
                     # Wait for up to 0.5 seconds for data
                     audio_chunk = await asyncio.wait_for(self.output_queue.get(), 0.5)
                     empty_checks = 0  # Reset counter when we get data
+                    consecutive_errors = 0  # Reset error counter when we successfully get data
                     
                     # Play the audio
                     if self.output_stream and self.playing:
                         try:
-                            self.output_stream.write(audio_chunk)
+                            # Only write to stream if it's active (not paused)
+                            if self.output_stream.is_active():
+                                self.output_stream.write(audio_chunk)
+                            else:
+                                logger.debug("Skipping audio chunk - stream is paused")
                         except Exception as e:
+                            consecutive_errors += 1
                             logger.error(f"Error writing to audio output: {e}")
-                            # Try to reopen the stream
-                            await self.stop_playback()
-                            await self.start_playback()
+                            
+                            # If we get multiple consecutive errors, restart the output stream
+                            if consecutive_errors >= max_consecutive_errors:
+                                logger.warning(f"Too many consecutive audio errors ({consecutive_errors}), restarting audio output")
+                                await self.stop_playback()
+                                await asyncio.sleep(0.2)  # Short delay before restarting
+                                await self.start_playback()
+                                consecutive_errors = 0
                     
                     # Mark task as done
                     self.output_queue.task_done()
@@ -450,16 +519,21 @@ class AudioHandler:
                     # No data received within timeout
                     empty_checks += 1
                     
-                    # If queue is empty for several checks and no speech is active, stop playback
-                    if empty_checks > 4 and not self.client.is_speech_active():
-                        logger.debug("Output queue empty and no speech active, stopping playback")
-                        await self.stop_playback()
-                        break
+                    # If queue has been empty for a while, do some idle processing
+                    if empty_checks > 10:  # 5 seconds of empty checks
+                        empty_checks = 0
+                        if not self.playing:
+                            break
+                except Exception as e:
+                    logger.error(f"Error in audio playback loop: {e}")
+                    await asyncio.sleep(0.1)  # Avoid tight loop on errors
                 
         except asyncio.CancelledError:
             logger.debug("Audio playback task cancelled")
         except Exception as e:
-            logger.error(f"Error in audio playback task: {e}")
+            logger.error(f"Unexpected error in playback task: {e}")
+        finally:
+            logger.debug("Audio playback task ended")
     
     async def send_audio_file(self, file_path: str) -> bool:
         """
@@ -621,3 +695,45 @@ class AudioHandler:
             self.pyaudio = None
             
         logger.info("Audio handler resources cleaned up")
+    
+    async def pause_playback(self) -> None:
+        """Temporarily pause audio playback without closing the stream"""
+        if not self.playing or not self.output_stream:
+            return
+            
+        try:
+            # Just pause the stream but keep it open
+            if self.output_stream:
+                self.output_stream.stop_stream()
+                logger.info("Audio playback paused")
+        except Exception as e:
+            logger.error(f"Error pausing output stream: {e}")
+            # If pausing fails, stop completely
+            await self.stop_playback()
+    
+    async def resume_playback(self) -> None:
+        """Resume paused audio playback"""
+        if not self.output_stream:
+            # If we don't have a stream, start a new one
+            await self.start_playback()
+            return
+            
+        try:
+            # Check if the stream exists and is not active
+            if self.output_stream and not self.output_stream.is_active():
+                # Ensure the stream is actually able to be started
+                if self.output_stream._is_stopped:
+                    self.output_stream.start_stream()
+                    logger.info("Audio playback resumed")
+                else:
+                    # If we can't resume, recreate the stream
+                    logger.info("Stream not in resumable state, recreating...")
+                    await self.stop_playback()
+                    await asyncio.sleep(0.1)  # Brief delay to ensure cleanup
+                    await self.start_playback()
+        except Exception as e:
+            logger.error(f"Error resuming output stream: {e}")
+            # If resuming fails, try to start fresh with a delay to avoid rapid cycling
+            await self.stop_playback()
+            await asyncio.sleep(0.2)  # Slightly longer delay before restart
+            await self.start_playback()
