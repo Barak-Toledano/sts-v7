@@ -44,9 +44,9 @@ class AudioHandler:
         
         # Audio configuration
         self.format = pyaudio.paInt16  # 16-bit PCM (matches AUDIO_FORMAT=pcm16)
-        self.channels = settings.CHANNELS
-        self.sample_rate = settings.SAMPLE_RATE
-        self.chunk_size = settings.CHUNK_SIZE
+        self.channels = settings.audio.channels
+        self.sample_rate = settings.audio.sample_rate
+        self.chunk_size = settings.audio.chunk_size
         self.max_queue_size = max_queue_size
         
         # Device selection
@@ -721,16 +721,19 @@ class AudioHandler:
         try:
             # Check if the stream exists and is not active
             if self.output_stream and not self.output_stream.is_active():
-                # Ensure the stream is actually able to be started
-                if self.output_stream._is_stopped:
+                try:
+                    # Directly attempt to start the stream without checking _is_stopped
                     self.output_stream.start_stream()
                     logger.info("Audio playback resumed")
-                else:
-                    # If we can't resume, recreate the stream
-                    logger.info("Stream not in resumable state, recreating...")
+                except Exception as stream_error:
+                    # If direct restart fails, recreate the stream
+                    logger.info(f"Could not restart stream: {stream_error}, recreating...")
                     await self.stop_playback()
                     await asyncio.sleep(0.1)  # Brief delay to ensure cleanup
                     await self.start_playback()
+            else:
+                # Stream is already active or in an unknown state
+                logger.info("Stream already active or in unknown state, no resume needed")
         except Exception as e:
             logger.error(f"Error resuming output stream: {e}")
             # If resuming fails, try to start fresh with a delay to avoid rapid cycling

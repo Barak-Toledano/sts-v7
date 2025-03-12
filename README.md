@@ -1,194 +1,246 @@
-# OpenAI Realtime API Assistant
+# OpenAI Realtime Assistant
 
-This repository contains a Python implementation of a voice assistant using OpenAI's Realtime API. It supports bidirectional audio communication, custom instructions, and function calling capabilities.
+A fully-featured voice interface for the OpenAI Realtime API, enabling natural voice conversations with AI assistants.
 
-## Architecture Overview
+## Features
 
-The application follows a clean architecture pattern with clear separation of concerns:
+- **Real-time Voice Conversations**: Engage in natural, back-and-forth voice conversations with OpenAI's assistants
+- **Seamless Experience**: Low-latency voice processing with incremental responses
+- **Interrupt Capability**: Interrupt the assistant mid-response, just like in a natural conversation
+- **Native Speech Processing**: Direct audio processing by the model for optimal performance and low latency
+- **Parallel Transcription**: Optional Whisper-based transcription for UI display and logging
+- **CLI Interface**: Simple command-line interface with status indicators and customizable display options
+- **Robust Architecture**: Clean, modular design with proper error handling and logging
+- **Event-Driven Design**: Flexible event system for responsive interactions
+- **Configurability**: Customizable settings for API credentials, audio devices, and more
 
-### Layers
+## Installation
 
-1. **Service Layer** (`src/services/`)
-   - Handles communication with external APIs and services
-   - Provides abstractions over third-party dependencies
-   - `OpenAIService` manages all interactions with OpenAI APIs
+### Prerequisites
 
-2. **Domain Layer** (`src/domain/`)
-   - Contains core business logic independent of external services
-   - `ConversationManager` manages conversation state and flow
-   - `AudioManager` handles audio processing and streaming
-
-3. **Data Layer** (`src/data/`)
-   - Manages data persistence and retrieval
-   - Models define entities and their relationships
-   - Repositories provide data access interfaces
-
-4. **Application Layer** (`app.py`)
-   - Orchestrates the application components
-   - Handles user interaction and configuration
-   - Provides command-line interface
-
-### Key Components
-
-- **BaseService**: Abstract interface for external service integrations
-- **BaseRepository**: Generic interface for data persistence
-- **Domain Models**: Type-safe data models with serialization
-- **Event-Driven Architecture**: Components communicate via events
-
-## Key Configuration Options
-
-### Audio Flow Control
-
-The system provides several parameters to control the conversational flow and audio sensitivity:
-
-#### VAD (Voice Activity Detection) Settings
-
-Located in `src/conversation.py` in the `configure_session` method:
-
-```python
-session_config["turn_detection"] = {
-    "type": "server_vad",
-    "threshold": 0.85,  # Higher number means less sensitive (0-1 range)
-    "prefix_padding_ms": 500,  # Padding before speech
-    "silence_duration_ms": 1200,  # Wait time for silence to ensure user is done speaking
-    "create_response": auto_response,
-    "interrupt_response": True  # Allow interruptions
-}
-```
-
-- **threshold**: Controls sensitivity to background noise (0.85 = less sensitive, 0.6 = more sensitive)
-- **silence_duration_ms**: How long to wait after detecting silence before concluding the user has finished speaking
-- **prefix_padding_ms**: How much audio to include before speech is detected
-
-#### Speech Detection Timing
-
-Located in `src/audio_handler.py` in the `speech_stopped_handler` function:
-
-```python
-# Add a delay before resuming AI audio to accommodate slow speakers or brief pauses
-async def delayed_resume():
-    # Wait for additional time to ensure the user is really done speaking
-    await asyncio.sleep(0.8)  # 800ms extra delay before AI starts speaking again
-    
-    # Check if we're still in a state where resuming makes sense
-    if self.output_stream and not self.output_stream.is_active():
-        logger.info("Delay period ended - resuming AI audio output")
-        await self.resume_playback()
-```
-
-- The 800ms delay prevents the AI from responding too quickly after the user stops speaking
-- This helps with slower speakers or people who pause briefly while thinking
-
-### AI Instructions
-
-Instructions are provided to the AI in two main ways:
-
-1. **System Instructions**:
-   - Defined in `src/system_instructions.py`
-   - Used when configuring a new session through `configure_session`
-   - Example: `APPOINTMENT_SCHEDULER` contains the full instructions for the appointment scheduling assistant
-
-2. **Runtime Instructions**:
-   - Can be passed to each response request using the `request_response` method:
-   ```python
-   await conversation.request_response(
-       modalities=["text", "audio"],
-       instructions="Additional specific instructions for this response"
-   )
-   ```
-
-### Configuring Who Speaks First
-
-#### AI Speaks First
-
-To make the AI speak first (initiating the conversation), uncomment these lines in the `setup_conversation` function in `app.py`:
-
-```python
-# Send initial greeting message
-await conversation.send_text_message(
-    "Hello! I'm your appointment scheduling assistant. I can help you book appointments for our services including consultations, basic services, and premium services. Please let me know how I can assist you today."
-)
-
-# Request first response from the model
-await conversation.request_response(modalities=["text", "audio"])
-```
-
-#### User Speaks First
-
-To make the AI wait for the user to speak first (default behavior), ensure the above lines remain commented out. The AI will only respond after detecting user speech.
-
-## Fine-Tuning Audio Sensitivity
-
-### For Environments with Background Noise
-
-If the AI responds to background noise too often:
-- Increase the `threshold` value in VAD settings (up to 0.95)
-- Increase `silence_duration_ms` (up to 1500ms)
-- Increase the speech duration threshold in `speech_stopped_handler` (currently 1.0 seconds)
-
-### For More Responsive Experience
-
-If the AI seems slow to respond:
-- Decrease the `silence_duration_ms` (down to 800ms)
-- Decrease the delay in `delayed_resume` (from 0.8 to 0.5 seconds)
-- Slightly lower the `threshold` (down to 0.8, but not too low to avoid triggering on background noise)
-
-## Running the Application
+- Python 3.10 or higher
+- OpenAI API key with access to the Realtime API
+- PyAudio (for audio input/output)
 
 ### Setup
 
-1. Install dependencies:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/openai-realtime-assistant.git
+   cd openai-realtime-assistant
    ```
+
+2. Create a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
 
-2. Create a `.env` file with your OpenAI API key:
+4. Configure environment variables:
+   Create a `.env` file in the project root with the following:
    ```
    OPENAI_API_KEY=your_api_key_here
+   OPENAI_ASSISTANT_ID=your_assistant_id_here
    ```
 
-### Usage
+## Usage
 
-Run the interactive voice assistant:
-```
-python app.py
-```
+### Basic Usage
 
-Process an audio file:
-```
-python app.py --audio-file path/to/file.wav
+Run the assistant:
+
+```bash
+python -m src --assistant-id your-assistant-id
 ```
 
-## Extending the System
+This will start the application in conversation mode, listening for your voice input.
 
-### Adding a New Service
+### Command-line Options
 
-1. Create a new service class in `src/services/` that inherits from `BaseService`
-2. Implement required abstract methods (`connect`, `disconnect`, etc.)
-3. Add specialized methods for the specific service
+```bash
+python -m src --help
+```
 
-### Adding a New Repository
+This will display all available command-line options:
 
-1. Create a new repository class in `src/data/` that inherits from `BaseRepository`
-2. Implement CRUD operations for the specific database technology
+- `--assistant-id`: ID of the OpenAI assistant to use (required)
+- `--instructions`: Custom instructions for the assistant
+- `--temperature`: Temperature parameter for generation (0.0-2.0)
+- `--input-device`: Input device index for audio
+- `--output-device`: Output device index for audio
+- `--save-recordings`: Save audio recordings to disk
+- `--debug`: Enable debug mode
 
-### Adding a New Function
+### In-app Commands
 
-1. Define the function schema in `src/function_definitions.py`
-2. Implement the function handler logic in `app.py`
-3. Register the handler in the `run_interactive_session` function
+During a conversation, you can use the following commands:
 
-## Debugging
+- `/quit`: Exit the application
+- `/help`: Display help information
+- `/restart`: Restart the conversation
+- `/pause`: Pause listening
+- `/resume`: Resume listening  
+- `/interrupt`: Interrupt the assistant
+- `/status`: Toggle status display
+- `/timestamps`: Toggle timestamps
+- `/compact`: Toggle compact mode
 
-For detailed logging of the communication with the OpenAI API:
-- Check the `src/services/openai_service.py` file which logs all API interactions
-- Review the logs in the `logs/` directory
-- Set `LOG_LEVEL=DEBUG` in your `.env` file for more detailed logs
+## Project Structure
 
-## Environment Configuration
+The project follows a clean, modular architecture:
 
-Essential environment variables (stored in `.env`):
-- `OPENAI_API_KEY`: Your OpenAI API key
-- `AUDIO_INPUT_DEVICE`: (Optional) Index of the audio input device
-- `AUDIO_OUTPUT_DEVICE`: (Optional) Index of the audio output device
-- `LOG_LEVEL`: (Optional) Logging level (DEBUG, INFO, WARNING, ERROR) 
+```
+src/
+├── __init__.py           # Package initialization
+├── __main__.py           # Entry point
+├── application.py        # Main application class
+├── config/               # Configuration management
+│   ├── __init__.py       # Config package initialization
+│   ├── settings.py       # Application settings using Pydantic
+│   └── logging_config.py # Logging configuration
+├── domain/               # Business logic
+│   ├── audio/            # Audio domain
+│   │   └── manager.py    # Audio management
+│   └── conversation/     # Conversation domain
+│       ├── manager.py    # Conversation orchestration
+│       └── state.py      # Conversation state management
+├── events/               # Event system
+│   └── event_interface.py # Event definitions and event bus
+├── presentation/         # User interfaces
+│   └── cli.py            # Command-line interface
+├── services/             # External services
+│   ├── api_client.py     # OpenAI API client
+│   └── audio_service.py  # Audio recording and playback
+└── utils/                # Utility modules
+    ├── async_helpers.py  # Async utilities
+    ├── audio_utilities.py # Audio processing utilities
+    ├── error_handling.py # Error handling
+    ├── token_management.py # Token tracking and management
+    └── transcription.py  # Speech transcription utilities
+```
+
+## Configuration
+
+The application uses a hierarchical configuration system:
+
+1. Default values defined in `src/config/settings.py`
+2. Environment variables (from `.env` file or system environment)
+3. Command-line arguments
+
+### Available Settings
+
+- `api.key`: OpenAI API key
+- `api.base_url`: Base URL for the OpenAI API
+- `api.timeout`: Request timeout in seconds
+- `audio.input_device`: Audio input device index
+- `audio.output_device`: Audio output device index
+- `audio.sample_rate`: Audio sample rate in Hz
+- `audio.channels`: Number of audio channels
+- `audio.chunk_size`: Audio chunk size
+- `audio.vad_threshold`: Voice activity detection threshold
+- `logging.level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+- `logging.file_path`: Path to log file
+- `debug_mode`: Enable debug mode
+
+## Transcription Handling
+
+The application uses a dual-path approach to handle speech:
+
+1. **Primary Path**: Direct audio processing by the Realtime API model
+   - Raw audio is sent directly to the model for processing
+   - This provides the lowest latency and best performance
+
+2. **Secondary Path**: Optional Whisper-based transcriptions via the Realtime API
+   - Enabled using the `input_audio_transcription` configuration
+   - Transcripts are received via the `conversation.item.input_audio_transcription.completed` event
+   - The application processes these events using dedicated handlers in the `transcription.py` module
+   - Emits `USER_TRANSCRIPTION_COMPLETED` events with formatted transcripts
+   - Useful for UI display, logging, and debugging purposes
+
+This dual approach provides optimal performance while still offering human-readable transcripts when needed.
+
+### Enabling Transcription
+
+Transcription is enabled by default when using the OpenAI Realtime API client. You can control this behavior:
+
+```python
+# Enable transcription (default)
+client.connect(assistant_id="your_assistant_id", enable_transcription=True)
+
+# Disable transcription
+client.connect(assistant_id="your_assistant_id", enable_transcription=False)
+```
+
+When enabled, the system will:
+1. Configure the session with Whisper transcription
+2. Process transcription events as they arrive
+3. Emit formatted transcription events through the event bus
+4. Provide logging for debugging purposes
+
+## Development
+
+### Running Tests
+
+```bash
+pytest
+```
+
+### Building Documentation
+
+```bash
+cd docs
+make html
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgements
+
+- OpenAI for providing the Realtime API
+- PyAudio for audio processing capabilities
+- The Python community for excellent libraries and tools
+
+## Voice Commands
+
+The application supports the following voice commands:
+
+- **"Goodbye"** or **"Good bye"**: Exits the application gracefully, with a farewell message.
+
+## Event Handling System
+
+The application uses a comprehensive event system to handle communication between components:
+
+1. **Event Bus**: Central pub/sub mechanism that routes events between components
+2. **Event Types**: Structured event definitions for consistent handling
+3. **Event Handlers**: Component-specific handlers for processing events
+
+### Realtime API Event Handler
+
+The application includes a dedicated Realtime API event handler (`src/services/realtime_event_handler.py`) that:
+
+- Centralizes handling of all OpenAI Realtime API events
+- Provides a comprehensive registry of all valid server and client events
+- Maps API events to application-specific events
+- Ensures consistent event processing across the application
+- Validates events against the API specification
+
+### Custom Events
+
+The application extends the standard OpenAI Realtime API with several custom client events:
+
+- **audio**: Direct audio data transmission (simplifies the standard input_audio_buffer.append)
+- **interrupt**: Allows interrupting the assistant mid-response
+- **heartbeat**: Keeps the WebSocket connection alive
+
+These custom events are clearly marked in the code and logged when used to maintain transparency about extensions to the standard API. 

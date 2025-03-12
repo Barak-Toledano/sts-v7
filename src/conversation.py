@@ -527,7 +527,7 @@ class ConversationManager:
                 # Custom VAD settings with better parameters for interruption
                 session_config["turn_detection"] = {
                     "type": "server_vad",
-                    "threshold": 0.85,  # Higher number means less sensitive (0-1 range)
+                    "threshold": 0.82,  # Higher number means less sensitive (0-1 range)
                     "prefix_padding_ms": 500,  # More padding before speech
                     "silence_duration_ms": 1200,  # Even longer wait for silence to ensure user is done speaking
                     "create_response": auto_response,

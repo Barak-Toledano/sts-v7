@@ -1,0 +1,171 @@
+# OpenAI Realtime Assistant Architecture
+
+## Directory Structure
+
+```
+openai-realtime-assistant/
+│
+├── main.py                # Main application entry point
+├── requirements.txt       # Dependencies
+├── README.md              # Documentation
+├── .env                   # Environment variables (gitignored)
+├── architecture.txt       # Architecture documentation
+│
+├── examples/              # Example scripts
+│   ├── audio_stress_test.py
+│   ├── audio_test.py
+│   ├── demo.py
+│   └── simple_test.py
+│
+├── src/
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── settings.py            # Application settings using Pydantic
+│   │   └── logging_config.py      # Logging configuration
+│   │
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── base_service.py        # Abstract service interface
+│   │   ├── openai_service.py      # OpenAI API integration
+│   │   ├── api_client.py          # OpenAI Realtime API client
+│   │   ├── audio_service.py       # Audio recording and playback service
+│   │   └── realtime_event_handler.py # Centralized event handler for Realtime API
+│   │
+│   ├── data/
+│   │   ├── __init__.py
+│   │   ├── base_repository.py     # Abstract repository interface
+│   │   ├── memory_repository.py   # In-memory implementation
+│   │   └── models.py              # Data models
+│   │
+│   ├── events/                    # Event system aligned with OpenAI Realtime API
+│   │   ├── __init__.py
+│   │   └── event_interface.py     # Event definitions and event bus
+│   │
+│   ├── domain/                    # Domain logic with hierarchical structure
+│   │   ├── __init__.py
+│   │   ├── conversation/          # Conversation domain with modular components
+│   │   │   ├── __init__.py
+│   │   │   ├── manager.py         # Conversation orchestration
+│   │   │   └── state.py           # Conversation state management
+│   │   └── audio/                 # Audio domain with modular components
+│   │       ├── __init__.py
+│   │       └── manager.py         # Audio orchestration
+│   │
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── async_helpers.py       # Async utility functions
+│   │   ├── audio_utilities.py     # Audio conversion utilities
+│   │   ├── error_handling.py      # Error handling utilities
+│   │   ├── logging_utils.py       # Logging utilities
+│   │   ├── token_management.py    # Token management utilities
+│   │   └── transcription.py       # Transcription utilities
+│   │
+│   ├── presentation/
+│   │   ├── __init__.py
+│   │   └── cli.py                 # Command-line interface
+│   │
+│   ├── application.py             # Main application class
+│   ├── audio_handler.py           # Audio handling (legacy/to be moved to domain)
+│   ├── config.py                  # Configuration utilities (legacy/to be consolidated)
+│   ├── conversation.py            # Conversation logic (legacy/to be moved to domain)
+│   ├── realtime_client.py         # Realtime client (legacy/to be moved to services)
+│   ├── system_instructions.py     # System instructions for the assistant
+│   ├── __init__.py
+│   └── __main__.py                # Entry point
+│
+└── tests/                 # Test directory
+    ├── __init__.py
+    ├── test_audio_handler.py
+    ├── test_conversation.py
+    ├── test_integration.py
+    ├── test_main.py
+    ├── test_realtime_client.py
+    └── test_transcription.py
+```
+
+## Key Architectural Principles
+
+1. **Single Responsibility Principle**
+   - Each file has a single, well-defined responsibility
+   - Modules are organized by domain area and function
+
+2. **Dependency Inversion**
+   - High-level modules don't depend on low-level modules
+   - Both depend on abstractions (interfaces)
+
+3. **Separation of Concerns**
+   - Clear boundaries between layers
+   - Data, domain logic, presentation, and services are separate
+
+4. **Hierarchical Domain Organization**
+   - Domain logic is organized in a hierarchical structure
+   - Related functionalities are grouped in dedicated subdirectories
+   - Improved modularity, testability, and maintainability
+
+5. **Event-Driven Architecture**
+   - Events system aligned with OpenAI Realtime API 
+   - Centralized event bus for registration and dispatch
+   - Dedicated event handler for processing API events
+
+6. **Repository Pattern**
+   - Data access abstracted behind repository interfaces
+   - Easy to switch implementations without changing consumers
+
+## Transition State Note
+
+The project is currently in a transition state with:
+- Some legacy files at the src/ root level (audio_handler.py, conversation.py, realtime_client.py)
+- Domain logic being migrated to the hierarchical structure under domain/
+- The hierarchical organization pattern being implemented progressively
+
+## Data Flow
+
+1. **Input Flow**
+   - User input → Presentation → Domain → Services → External APIs
+   - Audio input → Audio Service → Audio Manager → API Client → OpenAI Realtime API
+
+2. **Output Flow**
+   - OpenAI Events → API Client → Event Handler → Event Bus → Event Handlers → Domain → Presentation
+   - Audio Response → Audio Service → Audio Output
+
+## Dependencies Direction
+
+- Domain depends on nothing else (core business logic)
+- Services depend only on Events and Utils
+- Data depends only on Utils
+- Events depend only on Utils
+- Presentation depends on Domain, Events, and Utils
+
+## Configuration Management
+
+- Environment variables provide runtime configuration
+- Pydantic models ensure type safety and validation
+- Configuration in a single location (config module)
+
+## Error Handling Strategy
+
+- Consistent error handling through utils/error_handling.py
+- Domain-specific errors enriched with context
+- Proper error events dispatched to UI through event bus
+
+## Event System
+
+- Closely aligned with OpenAI Realtime API events
+- Clear separation between client events (outgoing) and server events (incoming)
+- Centralized event handling through realtime_event_handler.py
+- Comprehensive validation of event types against API specification
+
+## Custom Events
+
+The application extends the standard OpenAI Realtime API events with several custom events to support additional functionality:
+
+### Custom Client Events
+- **audio**: Direct audio data transmission (used instead of input_audio_buffer.append for simplicity)
+- **interrupt**: Allows interrupting the assistant mid-response
+- **heartbeat**: Keeps the WebSocket connection alive
+
+These custom events are implemented in our client but are not part of the official OpenAI Realtime API specification. They are maintained in a separate section of our event handler to clearly distinguish them from standard API events.
+
+## Voice Commands
+
+The application supports voice commands like "goodbye" to exit the application. These are processed in the ConversationManager by analyzing transcription events from the Whisper model 

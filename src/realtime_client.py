@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, Callable, List, Union, Set
 import logging
 from datetime import datetime
 import time
+import os
 
 from src.utils.logging_utils import setup_logger
 from src.config import settings
@@ -20,9 +21,9 @@ class RealtimeClient:
     """
     
     def __init__(self):
-        self.api_key = settings.OPENAI_API_KEY
-        self.model = settings.OPENAI_REALTIME_MODEL
-        self.websocket_url = f"{settings.WEBSOCKET_URL}?model={self.model}"
+        self.api_key = settings.api.api_key
+        self.model = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
+        self.websocket_url = f"wss://api.openai.com/v1/realtime?model={self.model}"
         self.websocket = None
         self.session_id = None
         self.session_state = {}

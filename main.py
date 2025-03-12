@@ -449,16 +449,18 @@ def validate_audio_file(file_path: str) -> bool:
             
         # Open and check WAV file properties
         with wave.open(file_path, 'rb') as wf:
-            # Check channels
-            channels = wf.getnchannels()
-            if channels != settings.CHANNELS:
-                logger.warning(f"File has {channels} channels, but API expects {settings.CHANNELS}")
-                
-            # Check sample rate
             sample_rate = wf.getframerate()
-            if sample_rate != settings.SAMPLE_RATE:
-                logger.warning(f"File sample rate is {sample_rate}Hz, but API expects {settings.SAMPLE_RATE}Hz")
-                
+            channels = wf.getnchannels()
+            
+            # Check if the audio format matches the API requirements
+            if channels != settings.audio.channels:
+                logger.warning(f"File has {channels} channels, but API expects {settings.audio.channels}")
+                return False
+            
+            if sample_rate != settings.audio.sample_rate:
+                logger.warning(f"File sample rate is {sample_rate}Hz, but API expects {settings.audio.sample_rate}Hz")
+                return False
+            
             # Check bit depth (16-bit PCM)
             sample_width = wf.getsampwidth()
             if sample_width != 2:  # 2 bytes = 16 bits
